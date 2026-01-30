@@ -1,6 +1,10 @@
 # Compiler files
 cache/
 out/
+.wake
+
+#vsCode
+.vscode
 
 # Ignores development broadcast logs
 !/broadcast
