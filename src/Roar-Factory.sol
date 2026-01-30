@@ -34,16 +34,17 @@ contract RoarFactory {
         tokenAddress = Clones.clone(implementation);
 
         // Initialize the clone with the provided configuration
-        RoarToken(tokenAddress).initialize(
-            config.name,
-            config.symbol,
-            config.maxSupply,
-            config.admin,
-            config.image,
-            config.metadata,
-            config.context,
-            config.initialSupplyChainId
-        );
+        RoarToken(tokenAddress)
+            .initialize(
+                config.name,
+                config.symbol,
+                config.maxSupply,
+                config.admin,
+                config.image,
+                config.metadata,
+                config.context,
+                config.initialSupplyChainId
+            );
 
         emit TokenCreated(tokenAddress);
     }
@@ -70,16 +71,17 @@ contract RoarFactory {
         tokenAddress = Clones.cloneDeterministic(implementation, salt);
 
         // Initialize the clone with the provided configuration
-        RoarToken(tokenAddress).initialize(
-            config.name,
-            config.symbol,
-            config.maxSupply,
-            config.admin,
-            config.image,
-            config.metadata,
-            config.context,
-            config.initialSupplyChainId
-        );
+        RoarToken(tokenAddress)
+            .initialize(
+                config.name,
+                config.symbol,
+                config.maxSupply,
+                config.admin,
+                config.image,
+                config.metadata,
+                config.context,
+                config.initialSupplyChainId
+            );
 
         emit TokenCreated(tokenAddress);
     }
