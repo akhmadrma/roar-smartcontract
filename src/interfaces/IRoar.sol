@@ -12,4 +12,6 @@ interface IRoar {
         string context;
         uint256 initialSupplyChainId;
     }
+
+    function admin() external view returns (address);
 }
