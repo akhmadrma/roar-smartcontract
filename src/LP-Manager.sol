@@ -3,9 +3,7 @@ pragma solidity ^0.8.28;
 
 import {IAlgebraFactory} from "./interfaces/IAlgebraFactory.sol";
 import {IAlgebraPool} from "./interfaces/IAlgebraPool.sol";
-import {
-    INonfungiblePositionManager
-} from "./interfaces/INonfungiblePositionManager.sol";
+import {INonfungiblePositionManager} from "./interfaces/INonfungiblePositionManager.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IRoar} from "./interfaces/IRoar.sol";
@@ -13,12 +11,7 @@ import {ChainlinkOracle} from "./lib/ChainlinkOracle.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
 event LiquidityPoolCreated(address pool);
-event LiquidityAdded(
-    uint256 tokenId,
-    uint128 liquidity,
-    uint256 amount0,
-    uint256 amount1
-);
+event LiquidityAdded(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
 
 contract LPManager is AccessControl {
     address _positionManager;
@@ -51,10 +44,7 @@ contract LPManager is AccessControl {
     }
 
     //create liquidity pool
-    function createLiquidityPool(
-        address token0,
-        address token1
-    ) public onlyRole(DEPLOYER_ROLE) returns (address) {
+    function createLiquidityPool(address token0, address token1) public onlyRole(DEPLOYER_ROLE) returns (address) {
         IAlgebraFactory algebraFactory = IAlgebraFactory(_algebraFactory);
         address pool = algebraFactory.createPool(token0, token1);
         emit LiquidityPoolCreated(pool);
@@ -62,11 +52,7 @@ contract LPManager is AccessControl {
     }
 
     // initialize position manager
-    function initialize(
-        address tokenCreated,
-        address poolContract,
-        address user_
-    ) external onlyRole(DEPLOYER_ROLE) {
+    function initialize(address tokenCreated, address poolContract, address user_) external onlyRole(DEPLOYER_ROLE) {
         IAlgebraPool pool = IAlgebraPool(poolContract);
         address token0 = pool.token0();
 
@@ -79,19 +65,12 @@ contract LPManager is AccessControl {
         pool.initialize(initialPrice);
     }
 
-    function addLiquidity(
-        address tokenCreated,
-        address poolContract,
-        address user_
-    ) external onlyRole(DEPLOYER_ROLE) {
+    function addLiquidity(address tokenCreated, address poolContract, address user_) external onlyRole(DEPLOYER_ROLE) {
         IAlgebraPool pool = IAlgebraPool(poolContract);
-        (, int24 currentTick, , , , ) = pool.globalState();
+        (, int24 currentTick,,,,) = pool.globalState();
         int24 tickSpacing = pool.tickSpacing();
 
-        int24 tickLower = _roundUpToTickSpacing(
-            currentTick + int24(tickSpacing),
-            tickSpacing
-        );
+        int24 tickLower = _roundUpToTickSpacing(currentTick + int24(tickSpacing), tickSpacing);
         int24 tickUpper = _roundDownToTickSpacing(MAX_TICK, tickSpacing);
         uint256 amount0Desired = IERC20(tokenCreated).balanceOf(user_); //NOTE : change this following the first holder token
         require(amount0Desired > 0, "No tokens to add");
@@ -102,7 +81,6 @@ contract LPManager is AccessControl {
         if (token0 != tokenCreated) {
             (token0, token1) = (token1, token0);
         }
-        
 
         // ✅ FIX: Transfer tokens from user to this contract
         IERC20(token0).transferFrom(user_, address(this), amount0Desired);
@@ -111,47 +89,34 @@ contract LPManager is AccessControl {
         IERC20(token0).approve(_positionManager, amount0Desired);
 
         // Mint position
-        INonfungiblePositionManager.MintParams
-            memory params = INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                amount0Desired: amount0Desired,
-                amount1Desired: 0,
-                amount0Min: (amount0Desired * 95) / 100, // Set appropriate slippage tolerance
-                amount1Min: 0, // Set appropriate slippage tolerance
-                recipient: msg.sender,
-                deadline: block.timestamp + 1200 // 20 minutes
-            });
+        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
+            token0: token0,
+            token1: token1,
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            amount0Desired: amount0Desired,
+            amount1Desired: 0,
+            amount0Min: (amount0Desired * 95) / 100, // Set appropriate slippage tolerance
+            amount1Min: 0, // Set appropriate slippage tolerance
+            recipient: msg.sender,
+            deadline: block.timestamp + 1200 // 20 minutes
+        });
 
-        (
-            uint256 tokenId,
-            uint128 liquidity,
-            uint256 amount0,
-            uint256 amount1
-        ) = INonfungiblePositionManager(_positionManager).mint(params);
+        (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) =
+            INonfungiblePositionManager(_positionManager).mint(params);
         emit LiquidityAdded(tokenId, liquidity, amount0, amount1);
     }
 
     // owner check
-    function _isOwner(
-        address token_,
-        address user_
-    ) private view returns (bool) {
+    function _isOwner(address token_, address user_) private view returns (bool) {
         address tokenAdmin = IRoar(token_).admin();
         return user_ == tokenAdmin;
     }
 
     // calculate initial price
-    function _calculateInitialPrice(
-        uint256 tokenCirculatingSupply,
-        bool isToken0
-    ) private view returns (uint160) {
-        uint256 tokenPriceUSD = (_initialMarketCap * 10 ** 8 * 10 ** 18) /
-            (tokenCirculatingSupply);
-        uint256 tokenPriceETH = (tokenPriceUSD * 10 ** 18) /
-            uint256(oracle.getETHUSDPrice());
+    function _calculateInitialPrice(uint256 tokenCirculatingSupply, bool isToken0) private view returns (uint160) {
+        uint256 tokenPriceUSD = (_initialMarketCap * 10 ** 8 * 10 ** 18) / (tokenCirculatingSupply);
+        uint256 tokenPriceETH = (tokenPriceUSD * 10 ** 18) / uint256(oracle.getETHUSDPrice());
         // Calculate price ratio
         uint256 priceRatioX192;
         if (isToken0) {
@@ -172,10 +137,7 @@ contract LPManager is AccessControl {
     }
 
     // Round up to nearest tick spacing
-    function _roundUpToTickSpacing(
-        int24 tick,
-        int24 spacing
-    ) internal pure returns (int24) {
+    function _roundUpToTickSpacing(int24 tick, int24 spacing) internal pure returns (int24) {
         int24 remainder = tick % spacing;
         if (remainder == 0) {
             return tick;
@@ -189,10 +151,7 @@ contract LPManager is AccessControl {
     }
 
     // Round down to nearest tick spacing
-    function _roundDownToTickSpacing(
-        int24 tick,
-        int24 spacing
-    ) internal pure returns (int24) {
+    function _roundDownToTickSpacing(int24 tick, int24 spacing) internal pure returns (int24) {
         int24 remainder = tick % spacing;
         if (remainder == 0) {
             return tick;
@@ -207,8 +166,8 @@ contract LPManager is AccessControl {
     }
 
     function grantDeployerRole(address deployer) external onlyRole(ADMIN_ROLE) {
-    _grantRole(DEPLOYER_ROLE, deployer);
-}
+        _grantRole(DEPLOYER_ROLE, deployer);
+    }
 
     //TODO : add update fuction for constructor params
 }

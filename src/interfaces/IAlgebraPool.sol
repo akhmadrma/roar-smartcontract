@@ -6,14 +6,7 @@ interface IAlgebraPool {
     function globalState()
         external
         view
-        returns (
-            uint160 price,
-            int24 tick,
-            uint16 lastFee,
-            uint8 pluginConfig,
-            uint16 communityFee,
-            bool unlocked
-        );
+        returns (uint160 price, int24 tick, uint16 lastFee, uint8 pluginConfig, uint16 communityFee, bool unlocked);
 
     function tickSpacing() external view returns (int24);
 
@@ -34,10 +27,7 @@ interface IAlgebraPool {
         uint128 fees1;
     }
 
-    function positions(bytes32 key)
-        external
-        view
-        returns (PositionInfo memory position);
+    function positions(bytes32 key) external view returns (PositionInfo memory position);
 
     // Swap
     struct SwapParams {

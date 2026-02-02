@@ -6,7 +6,7 @@ import {LPManager} from "./LP-Manager.sol";
 import {IRoar} from "./interfaces/IRoar.sol";
 
 contract Roar {
-    RoarFactory  _factory;
+    RoarFactory _factory;
     LPManager _lpManager;
     address _pairedToken;
 
@@ -28,7 +28,6 @@ contract Roar {
 
         //add liquidity
         _lpManager.addLiquidity(deployedToken, pool, config.admin);
-
 
         return deployedToken;
     }

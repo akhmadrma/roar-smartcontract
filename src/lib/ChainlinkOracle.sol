@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {
-    AggregatorV3Interface
-} from "@chainlink/interfaces/feeds/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "@chainlink/interfaces/feeds/AggregatorV3Interface.sol";
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -22,15 +20,14 @@ contract ChainlinkOracle is Ownable {
      * Returns the latest answer.
      */
     function getETHUSDPrice() public view returns (int256) {
-    (uint80 roundId, int256 answer, , uint256 updatedAt, uint80 answeredInRound) = 
-        dataFeed.latestRoundData();
-    
-    require(answer > 0, "Invalid price");
-    require(block.timestamp - updatedAt <= 3600, "Stale price");
-    require(answeredInRound >= roundId, "Incomplete round");
-    
-    return answer;
-}
+        (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) = dataFeed.latestRoundData();
+
+        require(answer > 0, "Invalid price");
+        require(block.timestamp - updatedAt <= 3600, "Stale price");
+        require(answeredInRound >= roundId, "Incomplete round");
+
+        return answer;
+    }
 
     function updateOracle(address newOracle) external onlyOwner {
         oracle = newOracle;

@@ -42,29 +42,17 @@ interface INonfungiblePositionManager {
     function mint(MintParams calldata params)
         external
         payable
-        returns (
-            uint256 tokenId,
-            uint128 liquidity,
-            uint256 amount0,
-            uint256 amount1
-        );
+        returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
 
     function increaseLiquidity(IncreaseLiquidityParams calldata params)
         external
         payable
-        returns (
-            uint128 liquidity,
-            uint256 amount0,
-            uint256 amount1
-        );
+        returns (uint128 liquidity, uint256 amount0, uint256 amount1);
 
     function decreaseLiquidity(DecreaseLiquidityParams calldata params)
         external
         payable
-        returns (
-            uint256 amount0,
-            uint256 amount1
-        );
+        returns (uint256 amount0, uint256 amount1);
 
     function collect(CollectParams calldata params) external returns (uint256 amount0, uint256 amount1);
 
