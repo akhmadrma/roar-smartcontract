@@ -29,7 +29,10 @@ contract RoarFactory {
     /// @param config Token configuration parameters
     /// @return tokenAddress The address of the newly created clone
     /// @dev The clone must be initialized after creation via the initialize() function
-    function createRoarToken(IRoar.RoarTokenConfig memory config) public returns (address tokenAddress) {
+    function createRoarToken(IRoar.RoarTokenConfig memory config, address LPLock_)
+        public
+        returns (address tokenAddress)
+    {
         // Create a minimal proxy pointing to the implementation
         tokenAddress = Clones.clone(implementation);
 
@@ -43,7 +46,8 @@ contract RoarFactory {
                 config.image,
                 config.metadata,
                 config.context,
-                config.initialSupplyChainId
+                config.initialSupplyChainId,
+                LPLock_
             );
 
         emit TokenCreated(tokenAddress);
@@ -63,7 +67,7 @@ contract RoarFactory {
     /// @param salt A unique salt for deterministic deployment
     /// @return tokenAddress The address of the newly created clone
     /// @dev Uses CREATE2 opcode for deterministic address generation
-    function createDeterministicRoarToken(IRoar.RoarTokenConfig memory config, bytes32 salt)
+    function createDeterministicRoarToken(IRoar.RoarTokenConfig memory config, bytes32 salt, address LPLock_)
         public
         returns (address tokenAddress)
     {
@@ -80,7 +84,8 @@ contract RoarFactory {
                 config.image,
                 config.metadata,
                 config.context,
-                config.initialSupplyChainId
+                config.initialSupplyChainId,
+                LPLock_
             );
 
         emit TokenCreated(tokenAddress);

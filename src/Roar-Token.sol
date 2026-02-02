@@ -67,7 +67,8 @@ contract RoarToken is ERC20, ERC20Permit, ERC20Votes, ERC20Burnable {
         string memory image_,
         string memory metadata_,
         string memory context_,
-        uint256 initialSupplyChainId_
+        uint256 initialSupplyChainId_,
+        address LPLock_
     ) external {
         require(!_initialized, "Already initialized");
         _initialized = true;
@@ -89,7 +90,7 @@ contract RoarToken is ERC20, ERC20Permit, ERC20Votes, ERC20Burnable {
 
         // Only mint initial supply on a single chain
         if (block.chainid == initialSupplyChainId_) {
-            _mint(admin_, maxSupply_); //NOTE : Change this to first holder (not suppose to be user)
+            _mint(LPLock_, maxSupply_); //NOTE : Change this to first holder (not suppose to be user)
         }
     }
 

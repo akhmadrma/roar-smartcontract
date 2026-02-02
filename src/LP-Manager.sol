@@ -5,19 +5,22 @@ import {IAlgebraFactory} from "./interfaces/IAlgebraFactory.sol";
 import {IAlgebraPool} from "./interfaces/IAlgebraPool.sol";
 import {INonfungiblePositionManager} from "./interfaces/INonfungiblePositionManager.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IRoar} from "./interfaces/IRoar.sol";
 import {ChainlinkOracle} from "./lib/ChainlinkOracle.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 event LiquidityPoolCreated(address pool);
 event LiquidityAdded(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
+event LiquidityPoolInitialized(address pool, uint256 initialPrice);
 
-contract LPManager is AccessControl {
+contract LPManager is AccessControl, ReentrancyGuard {
     address _positionManager;
     address _algebraFactory;
 
-    uint16 _initialMarketCap;
+    uint256 _initialMarketCap;
     int24 MAX_TICK;
     int24 MIN_TICK;
 
@@ -26,11 +29,16 @@ contract LPManager is AccessControl {
 
     ChainlinkOracle oracle;
 
+    modifier invalidValue(uint256 value) {
+        require(value > 0, "Invalid value");
+        _;
+    }
+
     constructor(
         address oracle_,
         address positionManager,
         address algebraFactory,
-        uint16 initialMarketCap,
+        uint256 initialMarketCap,
         int24 maxTick_,
         int24 minTick_
     ) {
@@ -44,7 +52,12 @@ contract LPManager is AccessControl {
     }
 
     //create liquidity pool
-    function createLiquidityPool(address token0, address token1) public onlyRole(DEPLOYER_ROLE) returns (address) {
+    function createLiquidityPool(address token0, address token1)
+        public
+        onlyRole(DEPLOYER_ROLE)
+        nonReentrant
+        returns (address)
+    {
         IAlgebraFactory algebraFactory = IAlgebraFactory(_algebraFactory);
         address pool = algebraFactory.createPool(token0, token1);
         emit LiquidityPoolCreated(pool);
@@ -54,51 +67,78 @@ contract LPManager is AccessControl {
     // initialize position manager
     function initialize(address tokenCreated, address poolContract, address user_) external onlyRole(DEPLOYER_ROLE) {
         IAlgebraPool pool = IAlgebraPool(poolContract);
-        address token0 = pool.token0();
 
-        bool owner = _isOwner(token0, user_);
+        // BUG FIX: Check if user_ is admin of tokenCreated (the RoarToken), not token0
+        // token0 could be WETH which doesn't have admin() function
+        bool owner = _isOwner(tokenCreated, user_);
 
         uint256 tokenSuply = IERC20(tokenCreated).totalSupply();
+        require(tokenSuply > 0, "Token supply is zero");
 
         uint160 initialPrice = _calculateInitialPrice(tokenSuply, owner);
 
         pool.initialize(initialPrice);
+
+        emit LiquidityPoolInitialized(poolContract, initialPrice);
     }
 
-    function addLiquidity(address tokenCreated, address poolContract, address user_) external onlyRole(DEPLOYER_ROLE) {
+    function addLiquidity(address tokenCreated, address poolContract, address user_)
+        external
+        onlyRole(DEPLOYER_ROLE)
+        nonReentrant
+    {
         IAlgebraPool pool = IAlgebraPool(poolContract);
         (, int24 currentTick,,,,) = pool.globalState();
         int24 tickSpacing = pool.tickSpacing();
 
-        int24 tickLower = _roundUpToTickSpacing(currentTick + int24(tickSpacing), tickSpacing);
-        int24 tickUpper = _roundDownToTickSpacing(MAX_TICK, tickSpacing);
-        uint256 amount0Desired = IERC20(tokenCreated).balanceOf(user_); //NOTE : change this following the first holder token
+        // Get actual pool tokens (WETH is always token0 due to lower address)
+        address poolToken0 = pool.token0();
+        address poolToken1 = pool.token1();
+        bool isTokenCreatedToken0 = (poolToken0 == tokenCreated);
+
+        uint256 amount0Desired = IERC20(tokenCreated).balanceOf(address(this));
         require(amount0Desired > 0, "No tokens to add");
 
-        address token0 = pool.token0();
-        address token1 = pool.token1();
+        // ✅ Approve position manager with the created token
+        IERC20(tokenCreated).approve(_positionManager, amount0Desired);
 
-        if (token0 != tokenCreated) {
-            (token0, token1) = (token1, token0);
+        // Calculate tick range based on whether created token is token0 or token1
+        int24 tickLower;
+        int24 tickUpper;
+
+        if (isTokenCreatedToken0) {
+            // Token is token0 - single-sided liquidity (only token0)
+            tickLower = _roundUpToTickSpacing(currentTick + int24(tickSpacing), tickSpacing);
+            tickUpper = _roundDownToTickSpacing(MAX_TICK, tickSpacing);
+        } else {
+            // Token is token1 - single-sided liquidity (only token1)
+            tickLower = _roundUpToTickSpacing(MIN_TICK, tickSpacing);
+            tickUpper = _roundDownToTickSpacing(currentTick - int24(tickSpacing), tickSpacing);
         }
 
-        // ✅ FIX: Transfer tokens from user to this contract
-        IERC20(token0).transferFrom(user_, address(this), amount0Desired);
+        // Determine amounts based on which token we're providing
+        uint256 createdTokenAmount;
+        uint256 pairedTokenAmount;
 
-        // ✅ Now approve position manager
-        IERC20(token0).approve(_positionManager, amount0Desired);
+        if (isTokenCreatedToken0) {
+            createdTokenAmount = amount0Desired;
+            pairedTokenAmount = 0;
+        } else {
+            createdTokenAmount = 0;
+            pairedTokenAmount = amount0Desired;
+        }
 
-        // Mint position
+        // Mint position - ALWAYS use poolToken0 and poolToken1 (maintain address order)
         INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
-            token0: token0,
-            token1: token1,
+            token0: poolToken0, // Lower address token (WETH)
+            token1: poolToken1, // Higher address token (our token)
             tickLower: tickLower,
             tickUpper: tickUpper,
-            amount0Desired: amount0Desired,
-            amount1Desired: 0,
-            amount0Min: (amount0Desired * 95) / 100, // Set appropriate slippage tolerance
+            amount0Desired: createdTokenAmount,
+            amount1Desired: pairedTokenAmount,
+            amount0Min: (createdTokenAmount * 95) / 100, // Set appropriate slippage tolerance
             amount1Min: 0, // Set appropriate slippage tolerance
-            recipient: msg.sender,
+            recipient: msg.sender, // TODO: create LP contract for manage fee
             deadline: block.timestamp + 1200 // 20 minutes
         });
 
@@ -114,7 +154,12 @@ contract LPManager is AccessControl {
     }
 
     // calculate initial price
-    function _calculateInitialPrice(uint256 tokenCirculatingSupply, bool isToken0) private view returns (uint160) {
+    function _calculateInitialPrice(uint256 tokenCirculatingSupply, bool isToken0)
+        private
+        view
+        invalidValue(tokenCirculatingSupply)
+        returns (uint160)
+    {
         uint256 tokenPriceUSD = (_initialMarketCap * 10 ** 8 * 10 ** 18) / (tokenCirculatingSupply);
         uint256 tokenPriceETH = (tokenPriceUSD * 10 ** 18) / uint256(oracle.getETHUSDPrice());
         // Calculate price ratio
@@ -133,7 +178,7 @@ contract LPManager is AccessControl {
         require(sqrtPriceX96 > 0, "Invalid price");
         require(sqrtPriceX96 <= type(uint160).max, "Price overflow");
 
-        return uint160(sqrtPriceX96);
+        return SafeCast.toUint160(sqrtPriceX96);
     }
 
     // Round up to nearest tick spacing

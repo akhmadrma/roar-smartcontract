@@ -18,7 +18,7 @@ contract Roar {
 
     function deployToken(IRoar.RoarTokenConfig memory config) public returns (address) {
         // deploy from factory
-        address deployedToken = _factory.createRoarToken(config);
+        address deployedToken = _factory.createRoarToken(config, address(_lpManager));
 
         //creating pool
         address pool = _lpManager.createLiquidityPool(deployedToken, _pairedToken);
