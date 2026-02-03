@@ -99,9 +99,6 @@ contract LPManager is AccessControl, ReentrancyGuard {
         uint256 amount0Desired = IERC20(tokenCreated).balanceOf(address(this));
         require(amount0Desired > 0, "No tokens to add");
 
-        // ✅ Approve position manager with the created token
-        IERC20(tokenCreated).approve(_positionManager, amount0Desired);
-
         // Calculate tick range based on whether created token is token0 or token1
         int24 tickLower;
         int24 tickUpper;
