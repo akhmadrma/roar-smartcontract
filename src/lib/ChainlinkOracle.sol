@@ -23,14 +23,17 @@ contract ChainlinkOracle is Ownable {
         (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) = dataFeed.latestRoundData();
 
         require(answer > 0, "Invalid price");
-        require(block.timestamp - updatedAt <= 3600, "Stale price");
+        require(block.timestamp - updatedAt <= 1200, "Stale price");
         require(answeredInRound >= roundId, "Incomplete round");
 
         return answer;
     }
 
     function updateOracle(address newOracle) external onlyOwner {
+        require(newOracle != address(0), "Invalid oracle");
         oracle = newOracle;
+
+        dataFeed = AggregatorV3Interface(oracle);
         uint256 timestamp = block.timestamp;
 
         emit OracleUpdated(oracle, timestamp);

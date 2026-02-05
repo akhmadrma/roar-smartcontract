@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {IAlgebraFactory} from "./interfaces/IAlgebraFactory.sol";
 import {IAlgebraPool} from "./interfaces/IAlgebraPool.sol";
 import {INonfungiblePositionManager} from "./interfaces/INonfungiblePositionManager.sol";
+import {IFeesManager} from "./interfaces/IFeesManager.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -13,24 +14,25 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 event LiquidityPoolCreated(address pool);
-event LiquidityAdded(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
+event LiquidityAdded(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1, address feeManager);
 event LiquidityPoolInitialized(address pool, uint256 initialPrice);
 
 contract LPManager is AccessControl, ReentrancyGuard {
     address _positionManager;
     address _algebraFactory;
 
+    address _feeManager;
+
     uint256 _initialMarketCap;
     int24 MAX_TICK;
     int24 MIN_TICK;
 
     bytes32 public DEPLOYER_ROLE = keccak256("DEPLOYER_ROLE");
-    bytes32 public ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
     ChainlinkOracle oracle;
 
     modifier invalidValue(uint256 value) {
-        require(value > 0, "Invalid value");
+        _valueCheck(value);
         _;
     }
 
@@ -40,15 +42,18 @@ contract LPManager is AccessControl, ReentrancyGuard {
         address algebraFactory,
         uint256 initialMarketCap,
         int24 maxTick_,
-        int24 minTick_
+        int24 minTick_,
+        address feeManager_
     ) {
+        require(initialMarketCap > 0, "Market cap must be positive");
         oracle = ChainlinkOracle(oracle_);
         _positionManager = positionManager;
         _algebraFactory = algebraFactory;
         _initialMarketCap = initialMarketCap;
         MAX_TICK = maxTick_;
         MIN_TICK = minTick_;
-        _grantRole(ADMIN_ROLE, msg.sender);
+        _feeManager = feeManager_;
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
     //create liquidity pool
@@ -68,24 +73,33 @@ contract LPManager is AccessControl, ReentrancyGuard {
     function initialize(address tokenCreated, address poolContract, address user_) external onlyRole(DEPLOYER_ROLE) {
         IAlgebraPool pool = IAlgebraPool(poolContract);
 
-        // BUG FIX: Check if user_ is admin of tokenCreated (the RoarToken), not token0
-        // token0 could be WETH which doesn't have admin() function
-        bool owner = _isOwner(tokenCreated, user_);
+        // Validate user is admin of tokenCreated
+        require(_isOwner(tokenCreated, user_), "User is not token admin");
 
         uint256 tokenSuply = IERC20(tokenCreated).totalSupply();
         require(tokenSuply > 0, "Token supply is zero");
 
-        uint160 initialPrice = _calculateInitialPrice(tokenSuply, owner);
+        // Determine actual token ordering from pool
+        address poolToken0 = pool.token0();
+        bool isToken0 = (poolToken0 == tokenCreated);
+
+        uint160 initialPrice = _calculateInitialPrice(tokenSuply, isToken0);
 
         pool.initialize(initialPrice);
 
         emit LiquidityPoolInitialized(poolContract, initialPrice);
     }
 
-    function addLiquidity(address tokenCreated, address poolContract, address user_)
+    function addLiquidity(
+        address tokenCreated,
+        address poolContract,
+        address creator
+        //NOTE : returns for testing
+    )
         external
         onlyRole(DEPLOYER_ROLE)
         nonReentrant
+        returns (uint256)
     {
         IAlgebraPool pool = IAlgebraPool(poolContract);
         (, int24 currentTick,,,,) = pool.globalState();
@@ -105,12 +119,12 @@ contract LPManager is AccessControl, ReentrancyGuard {
 
         if (isTokenCreatedToken0) {
             // Token is token0 - single-sided liquidity (only token0)
-            tickLower = _roundUpToTickSpacing(currentTick + int24(tickSpacing), tickSpacing);
+            tickLower = _roundUpToTickSpacing(currentTick + tickSpacing, tickSpacing);
             tickUpper = _roundDownToTickSpacing(MAX_TICK, tickSpacing);
         } else {
             // Token is token1 - single-sided liquidity (only token1)
             tickLower = _roundUpToTickSpacing(MIN_TICK, tickSpacing);
-            tickUpper = _roundDownToTickSpacing(currentTick - int24(tickSpacing), tickSpacing);
+            tickUpper = _roundDownToTickSpacing(currentTick - tickSpacing, tickSpacing);
         }
 
         // Determine amounts based on which token we're providing
@@ -125,6 +139,9 @@ contract LPManager is AccessControl, ReentrancyGuard {
             pairedTokenAmount = amount0Desired;
         }
 
+        IERC20(poolToken0).approve(_positionManager, createdTokenAmount);
+        IERC20(poolToken1).approve(_positionManager, pairedTokenAmount);
+
         // Mint position - ALWAYS use poolToken0 and poolToken1 (maintain address order)
         INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
             token0: poolToken0, // Lower address token (WETH)
@@ -134,14 +151,19 @@ contract LPManager is AccessControl, ReentrancyGuard {
             amount0Desired: createdTokenAmount,
             amount1Desired: pairedTokenAmount,
             amount0Min: (createdTokenAmount * 95) / 100, // Set appropriate slippage tolerance
-            amount1Min: 0, // Set appropriate slippage tolerance
-            recipient: msg.sender, // TODO: create LP contract for manage fee
+            amount1Min: (pairedTokenAmount * 95) / 100, // Set appropriate slippage tolerance
+            recipient: _feeManager,
             deadline: block.timestamp + 1200 // 20 minutes
         });
 
         (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) =
             INonfungiblePositionManager(_positionManager).mint(params);
-        emit LiquidityAdded(tokenId, liquidity, amount0, amount1);
+        emit LiquidityAdded(tokenId, liquidity, amount0, amount1, params.recipient);
+
+        // Register creator with FeesManager for fee collection
+        IFeesManager(_feeManager).registerCreator(tokenId, creator);
+
+        return tokenId;
     }
 
     // owner check
@@ -158,17 +180,21 @@ contract LPManager is AccessControl, ReentrancyGuard {
         returns (uint160)
     {
         uint256 tokenPriceUSD = (_initialMarketCap * 10 ** 8 * 10 ** 18) / (tokenCirculatingSupply);
-        uint256 tokenPriceETH = (tokenPriceUSD * 10 ** 18) / uint256(oracle.getETHUSDPrice());
+
+        int256 ethUsdPrice = oracle.getETHUSDPrice();
+        require(ethUsdPrice > 0, "Oracle: invalid ETH price");
+
+        uint256 tokenPriceETH = (tokenPriceUSD * 10 ** 18) / SafeCast.toUint256(ethUsdPrice);
         // Calculate price ratio
         uint256 priceRatioX192;
         if (isToken0) {
             // Token is token0, WETH is token1
             // Price = amount1/amount0 = WETH/Token
-            priceRatioX192 = (10 ** 18 * (2 ** 192)) / tokenPriceETH;
+            priceRatioX192 = (tokenPriceETH * (2 ** 192)) / (10 ** 18);
         } else {
             // WETH is token0, token is token1
             // Price = amount1/amount0 = Token/WETH
-            priceRatioX192 = (tokenPriceETH * (2 ** 192)) / (10 ** 18);
+            priceRatioX192 = (10 ** 18 * (2 ** 192)) / tokenPriceETH;
         }
 
         uint256 sqrtPriceX96 = Math.sqrt(priceRatioX192);
@@ -207,9 +233,42 @@ contract LPManager is AccessControl, ReentrancyGuard {
         }
     }
 
-    function grantDeployerRole(address deployer) external onlyRole(ADMIN_ROLE) {
-        _grantRole(DEPLOYER_ROLE, deployer);
+    function _valueCheck(uint256 value) internal pure {
+        require(value > 0, "Invalid value");
     }
 
-    //TODO : add update fuction for constructor params
+    function _grantDeployerRole(address deployer) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(deployer != address(0), "Invalid deployer address");
+        grantRole(DEPLOYER_ROLE, deployer);
+    }
+
+    function _grantAdminRole(address admin) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(admin != address(0), "Invalid admin address");
+        revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        grantRole(DEFAULT_ADMIN_ROLE, admin);
+    }
+
+    function updateInitialMarketCap(uint256 initialMarketCap_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _initialMarketCap = initialMarketCap_;
+    }
+
+    function updateMaxTick(int24 maxTick_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        MAX_TICK = maxTick_;
+    }
+
+    function updateMinTick(int24 minTick_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        MIN_TICK = minTick_;
+    }
+
+    function updatePositionManager(address positionManager_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _positionManager = positionManager_;
+    }
+
+    function updateAlgebraFactory(address algebraFactory_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _algebraFactory = algebraFactory_;
+    }
+
+    function updateOracle(address oracle_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        oracle = ChainlinkOracle(oracle_);
+    }
 }

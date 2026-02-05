@@ -6,31 +6,37 @@ import {LPManager} from "./LP-Manager.sol";
 import {IRoar} from "./interfaces/IRoar.sol";
 
 contract Roar {
-    RoarFactory _factory;
-    LPManager _lpManager;
-    address _pairedToken;
+    RoarFactory factory;
+    LPManager lpManager;
+    address pairedToken;
+
+    event TokenDeployed(address token, address pool, uint256 tokenLiqId, address creator);
 
     constructor(address factory_, address lpManager_, address pairedToken_) {
-        _factory = RoarFactory(factory_);
-        _lpManager = LPManager(lpManager_);
-        _pairedToken = pairedToken_;
+        factory = RoarFactory(factory_);
+        lpManager = LPManager(lpManager_);
+        pairedToken = pairedToken_;
     }
 
-    function deployToken(IRoar.RoarTokenConfig memory config) public returns (address) {
+    // NOTE : returns for testing purposes
+    function deployToken(IRoar.RoarTokenConfig memory config)
+        public
+        returns (address deployedToken_, address pool_, uint256 tokenLiqId_, address creator_)
+    {
         // deploy from factory
-        address deployedToken = _factory.createRoarToken(config, address(_lpManager));
+        address deployedToken = factory.createRoarToken(config, address(lpManager));
 
         //creating pool
-        address pool = _lpManager.createLiquidityPool(deployedToken, _pairedToken);
+        address pool = lpManager.createLiquidityPool(deployedToken, pairedToken);
 
         //initializing pool
-        _lpManager.initialize(deployedToken, pool, config.admin);
+        lpManager.initialize(deployedToken, pool, config.admin);
 
         //add liquidity
-        _lpManager.addLiquidity(deployedToken, pool, config.admin);
+        uint256 tokenLiqId = lpManager.addLiquidity(deployedToken, pool, config.admin);
 
-        return deployedToken;
+        emit TokenDeployed(deployedToken, pool, tokenLiqId, config.admin);
+
+        return (deployedToken, pool, tokenLiqId, config.admin);
     }
-
-    //TODO : create for swap function
 }

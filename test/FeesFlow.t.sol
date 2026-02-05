@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import "forge-std/Test.sol";
 import {StdAssertions} from "forge-std/StdAssertions.sol";
 import {console} from "forge-std/console.sol";
 import {Roar} from "src/Roar.sol";
@@ -14,59 +14,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAlgebraPool} from "src/interfaces/IAlgebraPool.sol";
 import {INonfungiblePositionManager} from "src/interfaces/INonfungiblePositionManager.sol";
 import {FeesManager} from "src/Fees-Manager.sol";
+import {INonfungiblePositionManager} from "src/interfaces/INonfungiblePositionManager.sol";
+import {IAlgebraPool} from "src/interfaces/IAlgebraPool.sol";
 import {ISwapRouter} from "src/interfaces/ISwapRouter.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-/**
- * @title RoarFlowTest
- * @notice Comprehensive flow test for Roar.sol contract on Arbitrum Sepolia fork
- * @dev Tests: deployToken -> createLiquidityPool -> initialize -> addLiquidity -> tradable
- *
- * ================================================================================
- * CRITICAL BUG DOCUMENTATION
- * ================================================================================
- *
- * BUG #1: Approval Bug in Roar.sol deployToken() (src/Roar.sol:31)
- * ----------------------------------------------------------------------
- * PROBLEM:
- * The Roar.sol contract calls _lpManager.addLiquidity() without handling token
- * approvals. The LPManager.addLiquidity() function (src/LP-Manager.sol:95)
- * attempts to transfer tokens from config.admin via transferFrom, but config.admin
- * never approved the LPManager to spend their tokens.
- *
- * FLOW:
- * 1. Roar.deployToken() is called
- * 2. Factory creates token and mints maxSupply to config.admin
- * 3. LPManager.createLiquidityPool() creates the pool
- * 4. LPManager.initialize() sets the initial price
- * 5. LPManager.addLiquidity() FAILS because:
- *    - It tries to do: IERC20(token0).transferFrom(user_, address(this), amount0Desired)
- *    - But user_ (config.admin) never approved LPManager!
- *    - The entire transaction fails with "ERC20: insufficient allowance"
- *
- * ROOT CAUSE:
- * The entire flow happens in ONE transaction. There's no opportunity for the
- * admin to approve the LPManager between token creation and liquidity addition.
- *
- * WORKAROUND (for testing):
- * - Deploy token manually
- * - Admin approves LPManager AFTER deployment
- * - Call LPManager functions separately
- *
- * PROPER FIX:
- * Roar contract should either:
- * a) Transfer tokens to itself first, then approve LPManager
- * b) Have admin pre-approve infinite amount to LPManager during setup
- * c) Use a different pattern where Roar holds the tokens
- *
- * ================================================================================
- *
- * Usage:
- *   forge test --match-path test/RoarFlowTest.t.sol -vvv
- *
- * Environment variables required:
- *   ARBITRUM_SEPOLIA_RPC_URL - RPC endpoint for Arbitrum Sepolia
- */
-contract RoarFlowTest is Test {
+contract FeesFlowTest is Test {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // CONSTANTS - Arbitrum Sepolia Deployed Addresses
     ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -91,6 +44,9 @@ contract RoarFlowTest is Test {
     int24 public constant MIN_TICK = -887272;
     int24 public constant MAX_TICK = 887272;
 
+    /// @notice Initial market cap in USD
+    uint256 constant INITIAL_MARKET_CAP_USD = 10_000; // $10,000
+
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // STATE VARIABLES
     ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -103,7 +59,7 @@ contract RoarFlowTest is Test {
 
     address public creator;
     address public admin;
-    address public protocolAdmin;
+    address public traders;
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // TOKEN CONFIG
@@ -116,17 +72,6 @@ contract RoarFlowTest is Test {
     string constant TOKEN_METADATA = "ipfs://QmTestMetadata";
     string constant TOKEN_CONTEXT = "Test context for ROAR token";
 
-    // LPManager config
-    uint256 constant INITIAL_MARKET_CAP_USD = 10_000; // $10,000
-
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-    // SETUP
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-
-    /**
-     * @notice Sets up the test by forking Arbitrum Sepolia and deploying contracts
-     * @dev Creates a fork of Arbitrum Sepolia at the latest block
-     */
     function setUp() public {
         // Create fork of Arbitrum Sepolia
         vm.createSelectFork("arbitrum_sepolia");
@@ -137,13 +82,15 @@ contract RoarFlowTest is Test {
         // Set up actors
         admin = address(this);
         creator = address(0x1234); // Separate admin address for testing
-        protocolAdmin = address(0x5678); // Protocol admin for fees
+        traders = address(0x5678); // Protocol admin for fees
 
+        console.log("=== State ===");
         console.log("Creator address:", creator);
         console.log("Admin address:", admin);
-        console.log("Protocol admin address:", protocolAdmin);
+        console.log("Traders address", traders);
 
-        // Deploy ChainlinkOracle (uses deployed Chainlink feed)
+        console.log("=== Contracts ===");
+        //Deploy Oracle
         oracle = new ChainlinkOracle(CHAINLINK_ETH_USD_FEED);
         console.log("ChainlinkOracle deployed:", address(oracle));
 
@@ -171,11 +118,10 @@ contract RoarFlowTest is Test {
         feesManager.grantRole(feesManager.LP_MANAGER_ROLE(), address(lpManager));
         console.log("Granted LP_MANAGER_ROLE to LPManager");
 
-        // Deploy RoarFactory first (with admin as initial roarGateway)
+        // Deploy RoarFactory
         factory = new RoarFactory(admin);
         console.log("RoarFactory deployed:", address(factory));
-
-        // Deploy Roar orchestrator contract with factory address
+        // Deploy Roar orchestrator contract
         roar = new Roar(address(factory), address(lpManager), WETH);
         console.log("Roar contract deployed:", address(roar));
 
@@ -185,87 +131,63 @@ contract RoarFlowTest is Test {
 
         // Grant DEPLOYER_ROLE to Roar contract
         lpManager._grantDeployerRole(address(roar));
-        console.log("Granted DEPLOYER_ROLE to Roar contract");
-
-        // Grant DEPLOYER_ROLE to admin for manual flow tests
-        lpManager._grantDeployerRole(admin);
-        console.log("Granted DEPLOYER_ROLE to admin");
-
-        // Grant admin role to protocol admin
-        feesManager.grantRole(feesManager.DEFAULT_ADMIN_ROLE(), protocolAdmin);
-        console.log("Granted DEFAULT_ADMIN_ROLE to protocolAdmin");
+        console.log("Granted lpManager DEPLOYER_ROLE to Roar contract");
 
         console.log("\n=== SETUP COMPLETE ===\n");
     }
 
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-    // BUG EXPOSURE & NEW BEHAVIOR TESTS
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-
-    /**
-     * @notice TEST: New behavior - tokens minted directly to LPManager
-     * @dev This test verifies the NEW direct mint behavior
-     *
-     * OLD BUG (now fixed): Tokens were minted to admin, requiring approval
-     * NEW BEHAVIOR: Tokens are minted directly to LPManager via LPLock parameter
-     */
-    function test_deployToken_directMintToLPManager() public {
-        console.log("\n=== DIRECT MINT TEST: Tokens to LPManager ===");
-
+    function test_DeployToken()
+        public
+        returns (address token_, address pool_, uint256 tokenLiqId_, address creatorAddress_)
+    {
         IRoar.RoarTokenConfig memory config = IRoar.RoarTokenConfig({
             name: TOKEN_NAME,
             symbol: TOKEN_SYMBOL,
             maxSupply: MAX_SUPPLY,
-            admin: admin,
+            admin: creator,
             image: TOKEN_IMAGE,
             metadata: TOKEN_METADATA,
             context: TOKEN_CONTEXT,
             initialSupplyChainId: ARBITRUM_SEPOLIA_CHAIN_ID
         });
 
-        // Deploy token with LPManager as LPLock via Roar contract
-        (address tokenAddress,,,) = roar.deployToken(config);
+        (address token, address pool, uint256 tokenLiqId, address creatorAddress) = roar.deployToken(config);
 
-        // Verify token was deployed
-        assertNotEq(tokenAddress, address(0), "Token should be deployed");
+        console.log("\n=== DEPLOY TOKEN TEST ===");
+        console.log("Token deployed:", token);
+        console.log("Pool deployed:", pool);
+        console.log("Token liquidity ID:", tokenLiqId);
+        console.log("Token creator:", creatorAddress);
 
-        // Verify tokens were used (deployToken includes addLiquidity which consumes tokens)
-        uint256 lpManagerBalance = IERC20(tokenAddress).balanceOf(address(lpManager));
-        uint256 adminBalance = IERC20(tokenAddress).balanceOf(admin);
+        IAlgebraPool poolContract = IAlgebraPool(pool);
 
-        console.log("LPManagerBalance", lpManagerBalance);
-        console.log("AdminBalance", adminBalance);
+        INonfungiblePositionManager positionManager = INonfungiblePositionManager(NONFUNGIBLE_POSITION_MANAGER);
 
-        // LPManager balance should be less than MAX_SUPPLY because liquidity was added
-        assertLt(lpManagerBalance, MAX_SUPPLY, "LPManager should have less than max supply (liquidity added)");
-        assertEq(adminBalance, uint256(0), "Admin should have 0 tokens (minted to LPManager)");
+        assertEq(creatorAddress, creator, "Token creator mismatch");
 
-        console.log("=== NEW BEHAVIOR VERIFIED: Tokens minted directly to LPManager ===");
+        vm.startPrank(traders);
+        // Fund the caller (traders) with ETH for gas fee
+        vm.deal(traders, 100 ether);
+        getWETH(100 ether);
+        console.log("Traders WETH balance:", IERC20(WETH).balanceOf(traders));
+
+        simulateTrading(token, pool, 20, traders);
+
+        console.log("Token balance:", IERC20(token).balanceOf(traders));
+
+        vm.stopPrank();
+
+        feesManager.collectFees(tokenLiqId);
+
+        console.log("creator WETH balance:", IERC20(WETH).balanceOf(creator));
+        console.log("feesManager WETH balance:", IERC20(WETH).balanceOf(address(feesManager)));
+
+        return (token, pool, tokenLiqId, creatorAddress);
     }
 
-    /**
-     * @notice Helper to get token ordering
-     * @param token Token address
-     * @param weth WETH address
-     * @return token0 Lower address token
-     * @return token1 Higher address token
-     * @return isTokenToken0 True if token is token0
-     */
-    function getTokenOrdering(address token, address weth)
-        internal
-        pure
-        returns (address token0, address token1, bool isTokenToken0)
-    {
-        if (token < weth) {
-            token0 = token;
-            token1 = weth;
-            isTokenToken0 = true;
-        } else {
-            token0 = weth;
-            token1 = token;
-            isTokenToken0 = false;
-        }
-    }
+    ///////////////////////////////////////////////////////////
+    ////// HELPERS
+    ///////////////////////////////////////////////////////////
 
     /**
      * @notice Helper to execute a swap through the swap router
@@ -276,11 +198,14 @@ contract RoarFlowTest is Test {
      * @param recipient Address to receive output tokens
      * @return amountOut Amount of output tokens received
      */
-    function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, address recipient)
-        external
+    function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, address recipient, address from)
+        public
         returns (uint256 amountOut)
     {
-        // Approve swap router to spend tokens
+        // Pull tokens from the actor (who approved us in prank context)
+        IERC20(tokenIn).transferFrom(from, address(this), amountIn);
+
+        // Approve swap router to spend tokens (now we own them)
         IERC20(tokenIn).approve(SWAP_ROUTER, amountIn);
 
         // Create swap params
@@ -302,25 +227,22 @@ contract RoarFlowTest is Test {
      * @notice Helper to simulate trading activity and generate fees
      * @dev Executes multiple swaps back and forth to generate fees
      * @param tokenAddress The creator token address
+     * @param poolAddress The pool address
      * @param iterations Number of swap iterations to perform
      */
-    function simulateTrading(
-        address tokenAddress,
-        address, /* poolAddress - unused but kept for interface consistency */
-        uint256 iterations
-    )
-        internal
-    {
-        uint256 swapAmount = 0.001 ether;
+    function simulateTrading(address tokenAddress, address poolAddress, uint256 iterations, address actor) internal {
+        uint256 swapAmount = 0.1 ether;
         uint256 successfulSwaps = 0;
 
         for (uint256 i = 0; i < iterations; i++) {
             if (i % 2 == 0) {
                 // Swap WETH for tokens
-                uint256 wethBalance = IERC20(WETH).balanceOf(address(this));
+                uint256 wethBalance = IERC20(WETH).balanceOf(actor);
                 if (wethBalance >= swapAmount) {
-                    try this.executeSwap(WETH, tokenAddress, swapAmount, address(this)) returns (uint256 amountOut) {
-                        console.log("Swap WETH -> Token, received:", amountOut);
+                    // Approve test contract to pull tokens (in prank context as actor)
+                    IERC20(WETH).approve(address(this), swapAmount);
+                    try this.executeSwap(WETH, tokenAddress, swapAmount, actor, actor) returns (uint256 amountOut) {
+                        // console.log("Swap WETH -> Token, received:", amountOut);
                         successfulSwaps++;
                     } catch Error(string memory reason) {
                         console.log("Swap FAILED:", reason);
@@ -332,10 +254,12 @@ contract RoarFlowTest is Test {
                 }
             } else {
                 // Swap tokens for WETH
-                uint256 tokenBalance = IERC20(tokenAddress).balanceOf(address(this));
+                uint256 tokenBalance = IERC20(tokenAddress).balanceOf(actor);
                 if (tokenBalance >= swapAmount) {
-                    try this.executeSwap(tokenAddress, WETH, swapAmount, address(this)) returns (uint256 amountOut) {
-                        console.log("Swap Token -> WETH, received:", amountOut);
+                    // Approve test contract to pull tokens (in prank context as actor)
+                    IERC20(tokenAddress).approve(address(this), swapAmount);
+                    try this.executeSwap(tokenAddress, WETH, swapAmount, actor, actor) returns (uint256 amountOut) {
+                        // console.log("Swap Token -> WETH, received:", amountOut);
                         successfulSwaps++;
                     } catch Error(string memory reason) {
                         console.log("Swap FAILED:", reason);
@@ -358,7 +282,6 @@ contract RoarFlowTest is Test {
      * @param amount Amount of ETH to wrap
      */
     function getWETH(uint256 amount) internal {
-        // Wrap ETH to WETH by calling deposit
         (bool success,) = WETH.call{value: amount}(abi.encodeWithSignature("deposit()"));
         require(success, "WETH deposit failed");
     }

@@ -90,7 +90,7 @@ contract RoarToken is ERC20, ERC20Permit, ERC20Votes, ERC20Burnable {
 
         // Only mint initial supply on a single chain
         if (block.chainid == initialSupplyChainId_) {
-            _mint(LPLock_, maxSupply_); //NOTE : Change this to first holder (not suppose to be user)
+            _mint(LPLock_, maxSupply_);
         }
     }
 

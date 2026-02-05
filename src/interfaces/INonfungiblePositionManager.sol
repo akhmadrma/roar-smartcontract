@@ -35,8 +35,8 @@ interface INonfungiblePositionManager {
     struct CollectParams {
         uint256 tokenId;
         address recipient;
-        uint256 amount0Max;
-        uint256 amount1Max;
+        uint128 amount0Max;
+        uint128 amount1Max;
     }
 
     function mint(MintParams calldata params)
@@ -66,7 +66,6 @@ interface INonfungiblePositionManager {
             address operator,
             address token0,
             address token1,
-            uint24 fee,
             int24 tickLower,
             int24 tickUpper,
             uint128 liquidity,
@@ -75,4 +74,9 @@ interface INonfungiblePositionManager {
             uint128 tokensOwed0,
             uint128 tokensOwed1
         );
+
+    // NFT transfer functions (ERC721)
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+
+    function ownerOf(uint256 tokenId) external view returns (address);
 }
